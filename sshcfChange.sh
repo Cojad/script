@@ -90,7 +90,7 @@ configure_sshd() {
   log "Forecd password: ssh root@$aws_ip -o PreferredAuthentications=password"
   log "------------------------------------------"
   log ""
-  log "You may set root password with 'sudo passwd root' command."
+  log "You may set root password with 'sudo passwd root' command." "info"
 }
 
 # Main script execution
