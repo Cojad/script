@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-#
+
 # Allow root ssh login and password auth
+# supporting OS: CentOS 7~9, Ubuntu 15~22
+#
 # usage: curl -fsSL https://raw.githubusercontent.com/Cojad/script/main/sshcfChange.sh | sudo -E bash
 # 
 { # this ensures the entire script is downloaded #
@@ -31,51 +33,68 @@ handle_error() {
   exit $exit_code
 }
 
+# Check if running as root
+if [[ "$EUID" -ne 0 ]]; then
+  handle_error 1 "This script must be run as root. Use sudo."
+fi
+
+# Check if the OS is Debian-based or CentOS-based
 check_os() {
-  if ! [ -f "/etc/debian_version" ]; then
-    echo "Error: This script is only supported on Debian-based systems."
-    exit 1
+  if [ -f "/etc/debian_version" ]; then
+    OS="Debian"
+  elif [ -f "/etc/centos-release" ]; then
+    OS="CentOS"
+  else
+    handle_error 1 "This script is only supported on Debian-based and CentOS systems."
   fi
 }
 
-# Function to configure the Repo
+# Function to configure sshd
 configure_sshd() {
-  # backup sshd_config tp sshd_config.bak.yyyymmddhhmmss
+  # Backup sshd_config
   cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak.$(date '+%Y%m%d%H%M%S')
-  echo 'PermitRootLogin yes
-PasswordAuthentication yes
-KbdInteractiveAuthentication no
-PasswordAuthentication yes
-PermitRootLogin yes
-PasswordAuthentication yes
-UsePAM yes
-X11Forwarding yes
-PrintMotd no
-AcceptEnv LANG LC_*
-Subsystem       sftp    /usr/lib/openssh/sftp-server' > /etc/ssh/sshd_config
+  if [ $? -ne 0 ]; then
+    handle_error $? "Failed to back up sshd_config"
+  fi
 
-  if [ $? -ne 0 ]; then
-    return 1
+  # Update sshd_config
+  sed -i 's/^#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+  sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+  if [ -f "/etc/ssh/sshd_config.d/60-cloudimg-settings.conf" ]; then
+    sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config.d/60-cloudimg-settings.conf
   fi
-  # remove 'no-port-forwarding,no-agent-forwarding,no-X11-forwarding,command="echo 'Please login as the user \"ubuntu\" rather than the user \"root\".';echo;sleep 10;exit 142" ' from /root/.ssh/authorized_keys
-  sed -i 's/^.*exit 142.*ssh-ed25519/ssh-ed25519/' /root/.ssh/authorized_keys
-  if [ $? -ne 0 ]; then
-    return 1
+  # if PasswordAuthentication is not found, add it to the end of the file
+  grep -q "^PasswordAuthentication" /etc/ssh/sshd_config || echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
+
+  # Remove restrictive commands from authorized_keys
+  sed -i 's/^.*echo;sleep 10.*ssh-rsa/ssh-rsa/' /root/.ssh/authorized_keys 2>/dev/null
+  sed -i 's/^.*echo;sleep 10.*ssh-ed25519/ssh-ed25519/' /root/.ssh/authorized_keys 2>/dev/null
+
+  # Restart SSH service
+  if [ "$OS" == "Debian" ]; then
+    systemctl restart ssh || handle_error $? "Failed to restart SSH service"
+  else
+    systemctl restart sshd || handle_error $? "Failed to restart SSHD service"
   fi
-  # Restart sshd
-  if ! service ssh restart; then
-      handle_error "$?" "Failed to run 'service ssh restart'"
-  fi
-  log "ssh is configured to allow root login successfully."
-  log "PasswordAuthentication is enabled."
+
+  # Log message with AWS metadata IP using IMDSv2
+  local token=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" -s)
+  local aws_ip=$(curl -s -H "X-aws-ec2-metadata-token: $token" http://169.254.169.254/latest/meta-data/public-ipv4)
+
+  log "SSH configured to allow root login successfully." "success"
+  log "PasswordAuthentication is enabled." "success"
+  log "You can now login as root user with forced password parameter using 'ssh root@$aws_ip -o PreferredAuthentications=password' command." "info"
+  log "------------------------------------------"
+  log "      Server IP: $aws_ip"
+  log "    SSH command: ssh root@$aws_ip"
+  log "Forecd password: ssh root@$aws_ip -o PreferredAuthentications=password"
+  log "------------------------------------------"
   log ""
-  log "Please set root password with 'sudo passwd root' command."
+  log "You may set root password with 'sudo passwd root' command."
 }
 
-# Check OS
+# Main script execution
 check_os
-
-# Main execution
-configure_sshd || handle_error $? "Failed configuring sshd to allow password authentication"
+configure_sshd
 
 } # this ensures the entire script is downloaded #
